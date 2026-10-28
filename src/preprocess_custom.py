@@ -5,19 +5,36 @@ MNIST Veri Seti Standartları (Yann LeCun et al.):
 1. Gri seviye (Grayscale) 28x28 piksel.
 2. Arka plan siyah (0), rakam çizgileri beyaz/açık renk (255'e kadar).
 3. Rakam, en-boy oranı korunarak 20x20 piksellik bir kutuya sığdırılır.
-4. Rakamın kütle merkezi (Center of Mass) veya sınır kutusu 28x28 alanın tam ortasına yerleştirilir.
+4. Rakamın kütle merkezi veya sınır kutusu 28x28 alanın tam ortasına yerleştirilir.
 5. Normalizasyon: Ortalama 0.1307, Standart Sapma 0.3081.
 
-Bu modül, cep telefonuyla çekilen kağıt üzerindeki el yazısı fotoğraflarını
-yukarıdaki MNIST standartlarına otomatik olarak dönüştürür.
+Bu modül, cep telefonuyla çekilen kağıt üzerindeki el yazısı fotoğraflarındaki
+gölgeleri, defter çizgilerini ve ışık dengesizliklerini temizleyip
+MNIST standartlarına dönüştürür.
 """
 
 import os
 import glob
+import re
 import numpy as np
-from PIL import Image, ImageOps, ImageDraw, ImageFont
+from PIL import Image, ImageOps, ImageFilter, ImageChops, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 import torch
+
+
+def get_natural_sort_key(filepath):
+    """
+    Dosya adındaki indeks numarasını sayısal olarak çıkarır (0, 1, 2, ..., 10).
+    Böylece 'digit_10' 'digit_1'den önce gelmez.
+    """
+    filename = os.path.basename(filepath)
+    m = re.search(r'digit_(\d+)', filename, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    digits = re.findall(r'\d+', filename)
+    if digits:
+        return int(digits[0])
+    return 0
 
 
 def preprocess_single_digit(image_input, target_size=(28, 28), digit_box_size=20):
@@ -26,72 +43,64 @@ def preprocess_single_digit(image_input, target_size=(28, 28), digit_box_size=20
     
     Adımlar:
       1. Gri seviyeye çevirme (Grayscale).
-      2. Renk inversiyonu (Kağıt beyaz/mürekkep siyah -> MNIST: Arka plan siyah/rakam beyaz).
-      3. Gürültü temizleme ve kontrast germe (Thresholding).
-      4. Rakamın sınır kutusunu (bounding box) bulma.
+      2. Arka plan aydınlatmasını çıkarma (BoxBlur ile gölge ve kağıt gradyanını yok etme).
+      3. Mürekkep çizgilerini izole etme ve eşikleme (Thresholding).
+      4. Rakam sınır kutusunu (bounding box) bulma.
       5. En-boy oranını koruyarak 20x20 kutuya sığdırma.
-      6. 28x28 siyah tuvalin ortasına yerleştirme (Center of Mass / Bounding Box Centering).
-    
-    Args:
-        image_input: Dosya yolu (str) veya PIL.Image nesnesi.
-        target_size: Hedef çıktı boyutu (28, 28).
-        digit_box_size: Rakamın sığdırılacağı kutu boyutu (20).
-        
-    Returns:
-        PIL.Image: 28x28 boyutunda MNIST uyumlu görsel.
+      6. 28x28 siyah tuvalin tam ortasına yerleştirme.
     """
     if isinstance(image_input, str):
         img = Image.open(image_input).convert('L')
     else:
         img = image_input.convert('L')
 
-    img_arr = np.array(img, dtype=np.float32)
+    w, h = img.size
 
-    # 1. Renk İnversiyon Kontrolü:
-    # Kağıt üzerindeki yazılarda genellikle kenarlar/arka plan parlak (beyaz), yazı koyudur.
-    # MNIST'te arka plan 0 (siyah), yazı 255 (beyaz) olmalıdır.
-    corners = [img_arr[0, 0], img_arr[0, -1], img_arr[-1, 0], img_arr[-1, -1]]
-    if np.mean(corners) > 127:  # Arka plan açıksa tersine çevir
-        img = ImageOps.invert(img)
-        img_arr = np.array(img, dtype=np.float32)
+    # 1. Arka Plan Aydınlatmasını Çıkarma (Gölge ve Kağıt Gradyanını Yok Etme):
+    # Geniş çaplı bir bulanıklaştırma ile kağıdın gölgeli arka planını tahmin et
+    radius = max(w, h) // 25
+    if radius < 3:
+        radius = 3
+    bg = img.filter(ImageFilter.BoxBlur(radius))
 
-    # 2. Gürültü ve arka plan temizliği (Basit eşikleme / kontrast artırma)
-    # Rakam pikselleri genellikle en yüksek değerlerdir. Arka plan parazitlerini sıfırla.
-    p_min = np.percentile(img_arr, 20)
-    p_max = np.percentile(img_arr, 99.5)
-    if p_max > p_min:
-        img_arr = np.clip((img_arr - p_min) / (p_max - p_min) * 255.0, 0, 255).astype(np.uint8)
+    # Kağıt açık renk, mürekkep koyu renktir: (bg - img) doğrudan mürekkep izini verir.
+    # Bu işlem hem renkleri tersine çevirir (MNIST gibi siyah arka plan / beyaz çizgi yapar)
+    # hem de ortamdaki gölgeleri ve çizgili defterin yumuşak tonlarını sıfırlar.
+    diff = ImageChops.subtract(bg, img)
+    arr = np.array(diff, dtype=np.float32)
+
+    max_val = arr.max()
+    if max_val > 0:
+        # En koyu mürekkep darbelerini korumak için dinamik eşikleme (%45)
+        thresh = max_val * 0.40
+        clean_arr = np.where(arr > thresh, 255, 0).astype(np.uint8)
     else:
-        img_arr = img_arr.astype(np.uint8)
+        clean_arr = arr.astype(np.uint8)
 
-    # Eşikleme: Belirli bir parlaklığın altındaki arka plan gürültülerini tamamen 0 yap
-    threshold = 50
-    img_arr[img_arr < threshold] = 0
-    img = Image.fromarray(img_arr)
+    clean_img = Image.fromarray(clean_arr)
 
-    # 3. Rakamın Sınır Kutusunu (Bounding Box) Bulma
-    bbox = img.getbbox()
+    # 2. Sınır Kutusunu (Bounding Box) Bulma
+    bbox = clean_img.getbbox()
     if bbox is None:
-        # Eğer görüntü tamamen boşsa boş 28x28 döndür
         return Image.new('L', target_size, 0)
 
-    cropped = img.crop(bbox)
-    w, h = cropped.size
+    cropped = clean_img.crop(bbox)
+    cw, ch = cropped.size
 
-    # 4. En-boy oranını koruyarak 20x20 kutuya sığdırma
-    if w > h:
-        new_w = digit_box_size
-        new_h = max(1, int(round((h * digit_box_size) / w)))
+    # 3. En-boy oranını koruyarak 20x20 kutuya sığdırma
+    if cw > ch:
+        nw = digit_box_size
+        nh = max(1, int(round((ch * digit_box_size) / cw)))
     else:
-        new_h = digit_box_size
-        new_w = max(1, int(round((w * digit_box_size) / h)))
+        nh = digit_box_size
+        nw = max(1, int(round((cw * digit_box_size) / ch)))
 
-    resized = cropped.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    resized = cropped.resize((nw, nh), Image.Resampling.LANCZOS)
 
-    # 5. 28x28 siyah tuval oluştur ve rakamı ortala
+    # 4. 28x28 siyah tuval oluştur ve rakamı ortala
     final_canvas = Image.new('L', target_size, 0)
-    paste_x = (target_size[0] - new_w) // 2
-    paste_y = (target_size[1] - new_h) // 2
+    paste_x = (target_size[0] - nw) // 2
+    paste_y = (target_size[1] - nh) // 2
     final_canvas.paste(resized, (paste_x, paste_y))
 
     return final_canvas
@@ -100,30 +109,37 @@ def preprocess_single_digit(image_input, target_size=(28, 28), digit_box_size=20
 def preprocess_all_custom_images(raw_dir="data/custom_digits/raw", 
                                  processed_dir="data/custom_digits/processed"):
     """
-    raw_dir içindeki tüm fotoğrafları işleyip processed_dir içine kaydeder.
-    Dosya isimlendirme formatı:
-      digit_<indeks>_val<rakam>.png  (Örnek: digit_0_val2.png -> 0. sıradaki rakam, değeri 2)
+    raw_dir içindeki tüm fotoğrafları doğal sırayla işleyip processed_dir içine kaydeder.
     """
     os.makedirs(processed_dir, exist_ok=True)
-    extensions = ("*.png", "*.jpg", "*.jpeg", "*.bmp")
-    files = []
+    
+    # Eski işlenmiş dosyaları temizle
+    for old_file in glob.glob(os.path.join(processed_dir, "*.*")):
+        try:
+            os.remove(old_file)
+        except Exception:
+            pass
+
+    extensions = ("*.png", "*.PNG", "*.jpg", "*.JPG", "*.jpeg", "*.JPEG", "*.bmp", "*.BMP")
+    files = set()
     for ext in extensions:
-        files.extend(glob.glob(os.path.join(raw_dir, ext)))
+        files.update(glob.glob(os.path.join(raw_dir, ext)))
+    
+    # Sayısal doğal sıralama (0, 1, 2, ..., 10)
+    files = sorted(list(files), key=get_natural_sort_key)
 
     if not files:
         print(f"[Uyarı] '{raw_dir}' dizininde işlenecek görüntü bulunamadı.")
         return []
 
     processed_paths = []
-    print(f"Toplam {len(files)} adet ham el yazısı görseli işleniyor...")
+    print(f"Toplam {len(files)} adet ham el yazısı görseli doğal sıralama ile işleniyor...")
     
-    for fpath in sorted(files):
+    for fpath in files:
         fname = os.path.basename(fpath)
         processed_img = preprocess_single_digit(fpath)
         out_path = os.path.join(processed_dir, fname)
-        # PNG formatında kaydet
-        if not out_path.endswith('.png'):
-            out_path = os.path.splitext(out_path)[0] + '.png'
+        out_path = os.path.splitext(out_path)[0] + '.png'
         processed_img.save(out_path)
         processed_paths.append(out_path)
         print(f" -> İşlendi ve kaydedildi: {out_path}")
@@ -133,58 +149,25 @@ def preprocess_all_custom_images(raw_dir="data/custom_digits/raw",
 
 
 def create_sample_student_digits(student_id="210102045", output_dir="data/custom_digits/raw"):
-    """
-    Kullanıcı henüz kendi fotoğraflarını çekip yüklemediyse, projenin baştan sona
-    eksiksiz çalışabilmesi ve test edilebilmesi için öğrenci numarası rakamlarından
-    örnek el yazısı benzeri ham görseller üretir.
-    
-    Öğrenci bu görselleri inceleyebilir veya kendi kağıda yazdığı fotoğraflarla
-    aynı isim formatında değiştirebilir.
-    """
     os.makedirs(output_dir, exist_ok=True)
-    print(f"Öğrenci No ({student_id}) için örnek el yazısı görselleri oluşturuluyor...")
-    
     created_files = []
     for idx, char in enumerate(str(student_id)):
         digit_val = int(char)
-        # 120x120 beyaz kağıt üzerine siyah çizim simülasyonu
         img = Image.new('L', (120, 120), color=250)
         draw = ImageDraw.Draw(img)
-
-        # Doğal el yazısı varyasyonu için hafif rastgele ofsetler ve eğim
-        np.random.seed(42 + idx * 7)
-        offset_x = int(np.random.randint(-6, 7))
-        offset_y = int(np.random.randint(-6, 7))
-        
-        # Basit çizgi / fırça darbesi simülasyonu
-        # Not: Varsayılan bitmap font veya el yazısı konturu
         try:
-            # Sistemdeki Arial veya Tahoma fontunu el yazısı benzeri dene
             font = ImageFont.truetype("arial.ttf", 75)
         except Exception:
             font = ImageFont.load_default()
 
-        # Rakamı merkeze yaz
-        draw.text((35 + offset_x, 15 + offset_y), str(digit_val), fill=10, font=font)
-
+        draw.text((35, 15), str(digit_val), fill=10, font=font)
         filename = f"digit_{idx}_val{digit_val}.png"
         filepath = os.path.join(output_dir, filename)
         img.save(filepath)
         created_files.append(filepath)
 
-    print(f"[Başarılı] {len(created_files)} adet ham görsel '{output_dir}' dizinine kaydedildi.")
     return created_files
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="El yazısı rakam ön işleme betiği")
-    parser.add_argument("--student_id", type=str, default="210102045", help="Öğrenci Okul Numarası")
-    parser.add_argument("--generate_sample", action="store_true", help="Örnek el yazısı görselleri üret")
-    parser.add_argument("--process", action="store_true", help="Ham görselleri 28x28 MNIST formatına çevir")
-    args = parser.parse_args()
-
-    if args.generate_sample:
-        create_sample_student_digits(args.student_id)
-    if args.process:
-        preprocess_all_custom_images()
+    preprocess_all_custom_images()

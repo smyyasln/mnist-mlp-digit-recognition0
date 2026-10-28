@@ -25,13 +25,26 @@ from src.dataset import get_mnist_transforms
 from src.models import get_model
 
 
+def get_natural_sort_key(filepath):
+    """
+    Dosya adindaki indeks numarasini sayisal olarak cikarir (0, 1, ..., 10).
+    """
+    filename = os.path.basename(filepath)
+    m = re.search(r'digit_(\d+)', filename, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    digits = re.findall(r'\d+', filename)
+    if digits:
+        return int(digits[0])
+    return 0
+
+
 def extract_label_from_filename(filename):
     """
     Dosya adindan gercek rakam etiketini cikarir.
     Ornekler:
       digit_0_val2.png -> 2
-      custom_7.png     -> 7
-      2.png            -> 2
+      digit_10_val8.png -> 8
     """
     match = re.search(r'val(\d+)', filename, re.IGNORECASE)
     if match:
@@ -49,10 +62,6 @@ def evaluate_custom_digits(
     figures_dir="figures",
     save_fig_name="custom_digit_predictions.png"
 ):
-    """
-    Islenmis el yazisi rakamlarini yukler, egitilmis MLP ile tahmin yapar
-    ve sonuclari gorsellestirir.
-    """
     os.makedirs(figures_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -65,8 +74,9 @@ def evaluate_custom_digits(
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    image_files = sorted(glob.glob(os.path.join(custom_dir, "*.png")) + 
-                         glob.glob(os.path.join(custom_dir, "*.jpg")))
+    all_files = glob.glob(os.path.join(custom_dir, "*.png")) + glob.glob(os.path.join(custom_dir, "*.jpg"))
+    # Dogal sayisal siralama ile sirala
+    image_files = sorted(all_files, key=get_natural_sort_key)
 
     if not image_files:
         raise FileNotFoundError(f"'{custom_dir}' dizininde gorsel bulunamadi! Once preprocess_custom.py calistirilmalidir.")
@@ -111,7 +121,7 @@ def evaluate_custom_digits(
 
         status = "[DOGRU]" if is_correct else "[YANLIS]"
         print(f"Rakam {idx+1:02d} ({filename}) | Gercek: {true_label} | Tahmin: {pred_label} | "
-              f"Guven: %{confidence:.2f} | {status}")
+              f"Guven: %{confidence:5.2f} | {status}")
 
     total_images = len(results)
     custom_accuracy = (correct_count / total_images) * 100.0 if total_images > 0 else 0.0
@@ -121,10 +131,10 @@ def evaluate_custom_digits(
     print(f"Dogru Tahmin:    {correct_count}")
     print(f"Ozel Veri Basarisi (Accuracy): %{custom_accuracy:.2f}")
 
-    # Gorsellestirme
-    cols = min(total_images, 10)
+    # Gorsellestirme: 11 rakam icin uygun grid (ornek: 1 satir 11 sutun veya 2 satir 6 sutun)
+    cols = min(total_images, 11)
     rows = (total_images + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.6))
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.0, rows * 2.8))
     if total_images == 1:
         axes = np.array([axes])
     axes = np.array(axes).reshape(-1)
@@ -135,15 +145,15 @@ def evaluate_custom_digits(
             axes[i].imshow(item["image"], cmap='gray')
             color = 'green' if item["is_correct"] else 'red'
             axes[i].set_title(
-                f"Gercek: {item['true_label']}\nTahmin: {item['pred_label']}\n(%{item['confidence']:.1f})",
-                color=color, fontsize=10, fontweight='bold'
+                f"Sira: {item['index']}\nGercek: {item['true_label']}\nTahmin: {item['pred_label']}\n(%{item['confidence']:.1f})",
+                color=color, fontsize=9, fontweight='bold'
             )
             axes[i].axis('off')
         else:
             axes[i].axis('off')
 
-    plt.suptitle(f"Ogrenci El Yazisi Rakam Tanima Sonuclari (Basari: %{custom_accuracy:.1f})",
-                 fontsize=14, fontweight='bold', y=1.03)
+    plt.suptitle(f"Ogrenci El Yazisi Rakam Tanima Sonuclari (Basari: %{custom_accuracy:.1f} - {correct_count}/{total_images} Dogru)",
+                 fontsize=13, fontweight='bold', y=1.03)
     plt.tight_layout()
     save_path = os.path.join(figures_dir, save_fig_name)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -160,10 +170,6 @@ def evaluate_custom_digits(
 
 
 def print_distribution_shift_analysis(custom_eval_results, test_acc):
-    """
-    Odevin beklenen ogrenme ciktisi olan 'Distribution Shift / Generalization'
-    farkini ayrintili olarak konsola yazdirir.
-    """
     custom_acc = custom_eval_results["accuracy"]
     diff = test_acc - custom_acc
 
