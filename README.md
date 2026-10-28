@@ -149,7 +149,7 @@ Geliştirdiğimiz [`src/preprocess_custom.py`](src/preprocess_custom.py) modül�
 
 ## 🔬 Kendi El Yazısı Rakamlarımızla Test ve Dağılım Kayması (Distribution Shift) Analizi
 
-Öğrenci okul numarası rakamları işlenip eğitilmiş modelimize sunulduğunda elde edilen sonuçlar aşağıda sunulmuştur:
+Öğrenci okul numarası (**`26120205088`**) kağıda el yazısıyla yazılmış, telefonla çekilen 11 adet ham rakam fotoğrafı ön işleme hattından geçirilerek eğitilmiş Temel MLP modelimize verilmiştir.
 
 ![Öğrenci Rakamları Tahminleri](figures/custom_digit_predictions.png)
 
@@ -158,9 +158,28 @@ Geliştirdiğimiz [`src/preprocess_custom.py`](src/preprocess_custom.py) modül�
 GERÇEK DÜNYA VERİSİ VE DAĞILIM KAYMASI (DISTRIBUTION SHIFT) ANALİZİ
 ================================================================================
 1. MNIST Test Kümesi Doğruluğu:         %98.15
-2. Öğrenci El Yazısı Kümesi Doğruluğu:   %100.00 (9/9 Doğru)
+2. Öğrenci El Yazısı Kümesi Doğruluğu:   %63.64 (11 Rakamdan 7'si Doğru)
+3. Başarım Farkı (Genelleştirme Boşluğu): %34.51
 --------------------------------------------------------------------------------
 ```
+
+### 📋 Tahmin Detayları Tablosu (Öğrenci No: 26120205088)
+
+| Sıra | Dosya Adı | Gerçek Rakam | Model Tahmini | Güven Skoru | Sonuç |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **0** | `digit_0_val2.png` | **2** | **2** | %96.63 | **DOĞRU [✓]** |
+| **1** | `digit_1_val6.png` | **6** | 5 | %99.90 | YANLIŞ [✗] |
+| **2** | `digit_2_val1.png` | **1** | **1** | %71.56 | **DOĞRU [✓]** |
+| **3** | `digit_3_val2.png` | **2** | **2** | %97.78 | **DOĞRU [✓]** |
+| **4** | `digit_4_val0.png` | **0** | **0** | %100.00 | **DOĞRU [✓]** |
+| **5** | `digit_5_val2.png` | **2** | **2** | %100.00 | **DOĞRU [✓]** |
+| **6** | `digit_6_val0.png` | **0** | **0** | %100.00 | **DOĞRU [✓]** |
+| **7** | `digit_7_val5.png` | **5** | **5** | %99.90 | **DOĞRU [✓]** |
+| **8** | `digit_8_val0.png` | **0** | 7 | %99.95 | YANLIŞ [✗] |
+| **9** | `digit_9_val8.png` | **8** | 3 | %99.70 | YANLIŞ [✗] |
+| **10** | `digit_10_val8.png` | **8** | 3 | %39.80 | YANLIŞ [✗] |
+
+---
 
 ### 🧐 Akademik Değerlendirme ve Tartışma:
 
@@ -168,16 +187,16 @@ GERÇEK DÜNYA VERİSİ VE DAĞILIM KAYMASI (DISTRIBUTION SHIFT) ANALİZİ
 
 1. **Uzamsal Öteleme Hassasiyeti (Lack of Translation Invariance):**
    - Evrişimli Sinir Ağları (CNN), kayan filtre pencereleri (kernel) ve ağırlık paylaşımı (weight sharing) sayesinde bir rakam görüntünün neresinde olursa olsun onu tanıyabilir (Translation Invariance).
-   - Ancak bu ödevde kullandığımız **MLP mimarisi**, $28 \times 28$ görüntüyü düzleştirip tek boyutlu $784$ elemanlı bir vektöre dönüştürür. Her bir nöron girdisi, görüntünün **sabit bir koordinatındaki piksele** bağlıdır.
-   - Bu nedenle el yazısı rakamımız $28 \times 28$ tuvalin merkezinden sadece 2-3 piksel dahi kaysa, MLP modelinin doğruluğu dramatik biçimde düşer. Bu problem, geliştirdiğimiz **merkezleme (centering & bounding box)** ön işleme adımı sayesinde aşılmıştır.
+   - Ancak bu ödevde kural gereği kullanılan **MLP mimarisi**, $28 \times 28$ görüntüyü düzleştirip tek boyutlu $784$ elemanlı bir vektöre dönüştürür. Her bir nöron girdisi, görüntünün **sabit bir koordinatındaki piksele** bağlıdır.
+   - Bu nedenle el yazısı rakamımız $28 \times 28$ tuvalin merkezinden sadece 2-3 piksel dahi kaysa, MLP modelinin performansı düşer. Geliştirdiğimiz **kütle merkezi hizalama ve kırpma** ön işlemesi bu etkiyi minimize etmiştir.
 
-2. **Çizgi Kalınlığı ve Kontrast Farkı (Stroke Thickness Shift):**
-   - MNIST veri setindeki rakamlar 1990'larda özel NIST formlarından taranmış ve kenarları antialiased (yumuşatılmış) formattadır.
-   - Gerçek hayatta tükenmez kalem veya kurşun kalemle yazılan çizgiler genellikle MNIST rakamlarına göre daha ince veya kesik kesik olabilmektedir.
+2. **Defter Çizgisi ve Gölge Gradyanı:**
+   - Çizgili deftere yazılan rakamların hemen altında yer alan defter çizgileri ve telefon çekiminden kaynaklı gölgeler, model tarafından çizgi olarak algılanmıştır. Geliştirilen adaptif aydınlatma filtresi ile gölgeler temizlenerek model başarımı %27'den %63.64'e çıkarılmıştır.
 
-3. **Yazım Stili Farklılıkları (Style Domain Gap):**
-   - MNIST ağırlıklı olarak Amerikan nüfus sayımı ve lise öğrencilerinin yazılarından oluşur. Örneğin Amerikan stilinde "7" rakamının ortasında yatay çizgi bulunmazken, Türkiye ve Avrupa'da "7" rakamı çoğunlukla ortadan çizgili yazılır. Ortası çizgili bir 7, model tarafından kolaylıkla "2" veya "1" ile karıştırılabilir.
-   - Benzer şekilde "1" rakamının tepesindeki çengel ve tabanındaki alt çizgi de farklı coğrafyalarda farklı sınıflandırma kaymalarına yol açar.
+3. **Yazım Stili ve Karıştırılan Sınıflar (8 $\leftrightarrow$ 3, 6 $\leftrightarrow$ 5):**
+   - Yanlış tahmin edilen iki adet "8" rakamının da "3" olarak tahmin edilmesi tesadüf değildir. El yazısında sol kavisi tam birleşmeyen veya daha ince kalan 8 rakamları, piksel uzayında 3 rakamına çok benzemektedir.
+   - "6" rakamının üst kavisi "5" rakamının üst şapkasına benzer yoğunlukta olduğu için model 5 kararı vermiştir.
+   - Bu hata örüntüleri, bir MLP ağının geometrik anlamı doğrudan kavramak yerine piksel çakışma olasılıklarına dayandığını açıkça ortaya koymaktadır.
 
 ---
 
